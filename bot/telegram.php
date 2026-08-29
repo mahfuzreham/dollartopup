@@ -24,10 +24,26 @@ if(!$isAdmin){
  }}echo'OK';exit;}
 $parts=preg_split('/\s+/',$text)?:[];$cmd=strtolower(explode('@',$parts[0]??'')[0]);$arg=trim(implode(' ',array_slice($parts,1)));
 switch($cmd){
-case '/start':case '/help':sendT($token,$chat,"💳 <b>Dollar Topup Admin</b>\n/setprice 130\n/setbkash INFO\n/setbank INFO\n/orders\n/approve ORDER\n/reject ORDER\n/withdraw ORDER\n/queue\n/history");break;
+case '/start':case '/help':sendT($token,$chat,"💳 <b>Dollar Topup Admin</b>\n/setprice 130\n/setbkash INFO\n/setbank INFO\n/orders\n/approve ORDER\n/reject ORDER\n/manualsent ORDER\n/queue\n/history");break;
 case '/setprice':$v=(float)($parts[1]??0);if($v>0){sv($db,'dollar_price_bdt',(string)$v);sendT($token,$chat,'✅ Price updated');}else sendT($token,$chat,'Usage: /setprice 130');break;
 case '/setbkash':case '/setbank':if($arg==='')sendT($token,$chat,"Usage: $cmd payment details");else{sv($db,$cmd==='/setbkash'?'bkash_instructions':'bank_instructions',$arg);sendT($token,$chat,'✅ Saved');}break;
 case '/orders':$r=$db->query("SELECT order_no,total_bdt,status FROM orders WHERE created_at>=NOW()-INTERVAL 90 DAY ORDER BY id DESC LIMIT 20")->fetchAll(PDO::FETCH_ASSOC);$o=$r?"📋 <b>Orders</b>\n":'No orders';foreach($r as $x)$o.="\n{$x['order_no']} | {$x['total_bdt']} BDT | {$x['status']}";sendT($token,$chat,$o);break;
-case '/approve':case '/reject':if($arg===''){sendT($token,$chat,"Usage: $cmd ORDER");break;}$st=$cmd==='/approve'?'approved':'rejected';$s=$db->prepare("UPDATE orders SET status=? WHERE order_no=? AND status='pending'");$s->execute([$st,$arg]);sendT($token,$chat,$s->rowCount()?"✅ $arg → $st":'❌ Not found/already processed');break;
+case '/approve':case '/reject':
+if($arg===''){sendT($token,$chat,"Usage: $cmd ORDER");break;}
+if($cmd==='/reject'){$s=$db->prepare("UPDATE orders SET status='rejected' WHERE order_no=? AND status='pending'");$s->execute([$arg]);sendT($token,$chat,$s->rowCount()?"❌ $arg → rejected":'❌ Not found/already processed');break;}
+$db->beginTransaction();try{
+$s=$db->prepare("SELECT order_no,usd_amount,bep20_address FROM orders WHERE order_no=? AND status='pending' FOR UPDATE");$s->execute([$arg]);$o=$s->fetch(PDO::FETCH_ASSOC);if(!$o)throw new RuntimeException('Order not found');
+$q=$db->prepare("INSERT INTO withdrawal_requests(order_no,destination_address,amount,status) VALUES(?,?,?,'queued')");$q->execute([$o['order_no'],$o['bep20_address'],$o['usd_amount']]);
+$db->prepare("UPDATE orders SET status='approved',withdrawal_status='queued',withdrawal_requested_at=NOW() WHERE order_no=?")->execute([$arg]);$db->commit();sendT($token,$chat,"✅ $arg approved. 💸 Withdrawal status: QUEUED");
+}catch(Throwable $e){if($db->inTransaction())$db->rollBack();error_log('Approve queue: '.$e->getMessage());sendT($token,$chat,'❌ Could not approve/queue order.');}break;
+
+case '/manualsent':
+if($arg===''){sendT($token,$chat,'Usage: /manualsent ORDER');break;}
+$s=$db->prepare("UPDATE withdrawal_requests SET status='completed',updated_at=NOW() WHERE order_no=? AND status IN ('queued','processing')");$s->execute([$arg]);
+$db->prepare("UPDATE orders SET withdrawal_status='completed' WHERE order_no=?")->execute([$arg]);
+sendT($token,$chat,$s->rowCount()?"✅ $arg marked MANUALLY SENT":'❌ No active withdrawal found');break;
+
+case '/queue':
+$r=$db->query("SELECT w.order_no,w.amount,w.status FROM withdrawal_requests w ORDER BY w.id ASC LIMIT 30")->fetchAll(PDO::FETCH_ASSOC);$o=$r?"💸 <b>Withdrawal Queue</b>\n":'Queue empty';foreach($r as $x)$o.="\n{$x['order_no']} | {$x['amount']} USDT | {$x['status']}";sendT($token,$chat,$o);break;
 default:sendT($token,$chat,'Use /help');
 } }catch(Throwable $e){error_log('Telegram error: '.$e->getMessage());}echo'OK';
