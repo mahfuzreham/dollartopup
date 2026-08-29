@@ -20,5 +20,14 @@ CREATE TABLE IF NOT EXISTS orders (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_status (status),
-  INDEX idx_trxid (bkash_trxid)
+  INDEX idx_trxid (bkash_trxid),
+  INDEX idx_created_at (created_at)
 );
+
+-- Retention policy: keep transaction history for 90 days.
+-- Recommended cron job (daily):
+-- DELETE FROM orders WHERE created_at < (NOW() - INTERVAL 90 DAY);
+
+CREATE EVENT IF NOT EXISTS purge_orders_older_than_90_days
+ON SCHEDULE EVERY 1 DAY
+DO DELETE FROM orders WHERE created_at < (NOW() - INTERVAL 90 DAY);
