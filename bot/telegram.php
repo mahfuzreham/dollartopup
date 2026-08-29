@@ -1,190 +1,33 @@
 <?php
 declare(strict_types=1);
-
-/*
- * Telegram webhook endpoint.
- * Optional security: set TELEGRAM_WEBHOOK_SECRET in .env and register the
- * webhook with Telegram secret_token using the same value.
- */
-$config = require __DIR__ . '/../config/config.php';
-
-$secret = (string)(getenv('TELEGRAM_WEBHOOK_SECRET') ?: '');
-if ($secret !== '') {
-    $provided = (string)($_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN'] ?? '');
-    if ($provided === '' || !hash_equals($secret, $provided)) {
-        http_response_code(403);
-        exit('Forbidden');
-    }
-}
-
-try {
-    $db = require __DIR__ . '/../config/database.php';
-    $token = (string)($config['telegram_bot_token'] ?? '');
-    $admins = array_values(array_filter(array_map('strval', $config['admin_telegram_ids'] ?? [])));
-
-    if ($token === '' || $admins === []) {
-        throw new RuntimeException('Telegram bot configuration missing');
-    }
-
-    $raw = file_get_contents('php://input') ?: '';
-    $update = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
-    $message = $update['message'] ?? null;
-
-    if (!is_array($message)) {
-        echo 'OK';
-        exit;
-    }
-
-    $chatId = (string)($message['chat']['id'] ?? '');
-    $userId = (string)($message['from']['id'] ?? '');
-    $text = trim((string)($message['text'] ?? ''));
-
-    function tgSend(string $token, string $chatId, string $text): void {
-        if ($chatId === '') return;
-        $payload = http_build_query([
-            'chat_id' => $chatId,
-            'text' => $text,
-            'parse_mode' => 'HTML',
-            'disable_web_page_preview' => 'true',
-        ]);
-        $context = stream_context_create(['http' => [
-            'method' => 'POST',
-            'header' => "Content-Type: application/x-www-form-urlencoded\r\nConnection: close\r\n",
-            'content' => $payload,
-            'timeout' => 12,
-            'ignore_errors' => true,
-        ]]);
-        @file_get_contents('https://api.telegram.org/bot' . $token . '/sendMessage', false, $context);
-    }
-
-    function esc(string $value): string {
-        return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-    }
-
-    function setting(PDO $db, string $key, string $default = ''): string {
-        $stmt = $db->prepare('SELECT setting_value FROM settings WHERE setting_key = ? LIMIT 1');
-        $stmt->execute([$key]);
-        $value = $stmt->fetchColumn();
-        return $value === false ? $default : (string)$value;
-    }
-
-    function saveSetting(PDO $db, string $key, string $value): void {
-        $stmt = $db->prepare(
-            'INSERT INTO settings(setting_key,setting_value) VALUES(?,?)
-             ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)'
-        );
-        $stmt->execute([$key, $value]);
-    }
-
-    if (!in_array($userId, $admins, true)) {
-        tgSend($token, $chatId, '⛔ Unauthorized');
-        echo 'OK';
-        exit;
-    }
-
-    $parts = preg_split('/\s+/', $text) ?: [];
-    $command = strtolower(explode('@', $parts[0] ?? '')[0]);
-    $arg = trim(implode(' ', array_slice($parts, 1)));
-
-    switch ($command) {
-        case '/start':
-        case '/help':
-            tgSend($token, $chatId, "💳 <b>Dollar Topup Admin</b>\n\n💵 /price\n/setprice 125\n🏦 /setbkash PAYMENT_TEXT\n/setbank PAYMENT_TEXT\n/paymentmethods\n📋 /orders\n/order ORDER_NO\n📊 /history\n✅ /approve ORDER_NO\n❌ /reject ORDER_NO\n💸 /withdraw ORDER_NO\n/queue\n/withdrawstatus ORDER_NO");
-            break;
-
-        case '/price':
-            tgSend($token, $chatId, '💵 Price: <b>' . esc(setting($db, 'dollar_price_bdt', '120')) . ' BDT/USD</b>');
-            break;
-
-        case '/setprice':
-            $price = (float)($parts[1] ?? 0);
-            if ($price <= 0 || $price > 1000000) {
-                tgSend($token, $chatId, 'Usage: /setprice 125');
-                break;
-            }
-            saveSetting($db, 'dollar_price_bdt', number_format($price, 4, '.', ''));
-            tgSend($token, $chatId, '✅ Price updated');
-            break;
-
-        case '/setbkash':
-        case '/setbank':
-            if ($arg === '') {
-                tgSend($token, $chatId, 'Usage: ' . $command . ' PAYMENT_TEXT');
-                break;
-            }
-            saveSetting($db, $command === '/setbkash' ? 'bkash_instructions' : 'bank_instructions', $arg);
-            tgSend($token, $chatId, '✅ Payment instructions saved');
-            break;
-
-        case '/paymentmethods':
-            tgSend($token, $chatId, "🏦 <b>Payment Methods</b>\n\nbKash: " . (setting($db, 'bkash_instructions') !== '' ? 'Configured' : 'Not set') . "\nBank: " . (setting($db, 'bank_instructions') !== '' ? 'Configured' : 'Not set'));
-            break;
-
-        case '/orders':
-            $rows = $db->query("SELECT order_no,total_bdt,status,withdrawal_status FROM orders WHERE created_at >= NOW()-INTERVAL 90 DAY ORDER BY id DESC LIMIT 20")->fetchAll(PDO::FETCH_ASSOC);
-            $out = $rows ? "📋 <b>Orders</b>\n\n" : '📭 No orders.';
-            foreach ($rows as $row) {
-                $out .= '<b>' . esc((string)$row['order_no']) . '</b> | ' . number_format((float)$row['total_bdt'], 2) . ' BDT | ' . esc((string)$row['status']) . ' | WD: ' . esc((string)($row['withdrawal_status'] ?? 'not_requested')) . "\n";
-            }
-            tgSend($token, $chatId, $out);
-            break;
-
-        case '/approve':
-        case '/reject':
-            if ($arg === '') { tgSend($token, $chatId, "Usage: $command ORDER_NO"); break; }
-            $status = $command === '/approve' ? 'approved' : 'rejected';
-            $stmt = $db->prepare("UPDATE orders SET status = ? WHERE order_no = ? AND status IN ('pending','paid','failed')");
-            $stmt->execute([$status, $arg]);
-            tgSend($token, $chatId, $stmt->rowCount() ? "✅ " . esc($arg) . " → $status" : '❌ Order not found or already finalized');
-            break;
-
-        case '/withdraw':
-            if ($arg === '') { tgSend($token, $chatId, 'Usage: /withdraw ORDER_NO'); break; }
-            $db->beginTransaction();
-            try {
-                $stmt = $db->prepare("SELECT order_no,usd_amount,bep20_address FROM orders WHERE order_no = ? AND status='approved' AND bep20_address IS NOT NULL AND bep20_address <> '' AND withdrawal_status='not_requested' FOR UPDATE");
-                $stmt->execute([$arg]);
-                $order = $stmt->fetch(PDO::FETCH_ASSOC);
-                if (!$order) throw new RuntimeException('Order is not eligible for withdrawal');
-
-                $queue = $db->prepare("INSERT INTO withdrawal_requests(order_no,destination_address,amount,status) VALUES(?,?,?,'queued')");
-                $queue->execute([$order['order_no'], $order['bep20_address'], $order['usd_amount']]);
-
-                $update = $db->prepare("UPDATE orders SET withdrawal_status='queued',withdrawal_requested_at=NOW() WHERE order_no=? AND withdrawal_status='not_requested'");
-                $update->execute([$arg]);
-                $db->commit();
-                tgSend($token, $chatId, '💸 Withdrawal request queued: <b>' . esc($arg) . '</b>\nStatus: queued');
-            } catch (Throwable $e) {
-                if ($db->inTransaction()) $db->rollBack();
-                error_log('Dollar Topup withdrawal queue: ' . $e->getMessage());
-                tgSend($token, $chatId, '❌ Withdrawal could not be queued. Check order status.');
-            }
-            break;
-
-        case '/queue':
-            $rows = $db->query("SELECT order_no,amount,status FROM withdrawal_requests WHERE status IN ('queued','processing') ORDER BY id ASC LIMIT 20")->fetchAll(PDO::FETCH_ASSOC);
-            $out = $rows ? "💸 <b>Withdrawal Queue</b>\n\n" : 'Queue empty.';
-            foreach ($rows as $row) $out .= esc((string)$row['order_no']) . ' | ' . esc((string)$row['amount']) . ' USDT | ' . esc((string)$row['status']) . "\n";
-            tgSend($token, $chatId, $out);
-            break;
-
-        case '/withdrawstatus':
-            if ($arg === '') { tgSend($token, $chatId, 'Usage: /withdrawstatus ORDER_NO'); break; }
-            $stmt = $db->prepare('SELECT status,provider_reference,error_message FROM withdrawal_requests WHERE order_no=? LIMIT 1');
-            $stmt->execute([$arg]);
-            $row = $stmt->fetch(PDO::FETCH_ASSOC);
-            tgSend($token, $chatId, $row ? "💸 <b>" . esc($arg) . '</b>\nStatus: ' . esc((string)$row['status']) . '\nRef: ' . esc((string)($row['provider_reference'] ?: '-')) : '❌ No withdrawal request');
-            break;
-
-        case '/history':
-            $row = $db->query("SELECT COUNT(*) c, COALESCE(SUM(total_bdt),0) b FROM orders WHERE created_at >= NOW()-INTERVAL 90 DAY")->fetch(PDO::FETCH_ASSOC);
-            tgSend($token, $chatId, '📊 <b>Last 90 Days</b>\nOrders: ' . (int)$row['c'] . '\nBDT: ' . number_format((float)$row['b'], 2));
-            break;
-
-        default:
-            tgSend($token, $chatId, 'Use /help');
-    }
-} catch (Throwable $e) {
-    error_log('Dollar Topup Telegram webhook error: ' . $e->getMessage());
-}
-echo 'OK';
+$config=require __DIR__.'/../config/config.php';
+try{
+$db=require __DIR__.'/../config/database.php';$token=(string)$config['telegram_bot_token'];$admins=array_map('strval',$config['admin_telegram_ids']??[]);
+$u=json_decode(file_get_contents('php://input')?:'',true,512,JSON_THROW_ON_ERROR);$m=$u['message']??[];$chat=(string)($m['chat']['id']??'');$uid=(string)($m['from']['id']??'');$text=trim((string)($m['text']??''));
+function sendT($t,$c,$x){$d=http_build_query(['chat_id'=>$c,'text'=>$x,'parse_mode'=>'HTML']);@file_get_contents('https://api.telegram.org/bot'.$t.'/sendMessage',false,stream_context_create(['http'=>['method'=>'POST','header'=>"Content-Type: application/x-www-form-urlencoded\r\n",'content'=>$d,'timeout'=>12]]));}
+function sv(PDO $d,$k,$v){$s=$d->prepare("INSERT INTO settings(setting_key,setting_value) VALUES(?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)");$s->execute([$k,$v]);}
+function gv(PDO $d,$k,$x=''){$s=$d->prepare('SELECT setting_value FROM settings WHERE setting_key=?');$s->execute([$k]);return (string)($s->fetchColumn()?:$x);}
+function sess(PDO $d,$uid,$chat,$step,$data){$s=$d->prepare("INSERT INTO telegram_order_sessions(telegram_user_id,chat_id,step,data_json) VALUES(?,?,?,?) ON DUPLICATE KEY UPDATE chat_id=VALUES(chat_id),step=VALUES(step),data_json=VALUES(data_json)");$s->execute([$uid,$chat,$step,json_encode($data)]);}
+function getsess(PDO $d,$uid){$s=$d->prepare('SELECT step,data_json FROM telegram_order_sessions WHERE telegram_user_id=?');$s->execute([$uid]);$r=$s->fetch(PDO::FETCH_ASSOC);return $r?[$r['step'],json_decode($r['data_json'],true)?:[]]:null;}
+function clearsess(PDO $d,$uid){$s=$d->prepare('DELETE FROM telegram_order_sessions WHERE telegram_user_id=?');$s->execute([$uid]);}
+if($chat===''||$uid===''){echo'OK';exit;}
+$isAdmin=in_array($uid,$admins,true);
+if(!$isAdmin){
+ if($text==='/start'||$text==='/buy'){sess($db,$uid,$chat,'usd',[]);sendT($token,$chat,"💳 <b>Dollar Topup Card</b>\n\nআপনি কত USD কিনতে চান? শুধু amount লিখুন।\nউদাহরণ: <b>10</b>");}
+ elseif($text==='/cancel'){clearsess($db,$uid);sendT($token,$chat,'❌ Order cancelled.');}
+ else{$z=getsess($db,$uid);if(!$z){sendT($token,$chat,'💳 Order করতে /buy লিখুন।');}else{[$step,$d]=$z;
+  if($step==='usd'){if(!is_numeric($text)||(float)$text<=0||(float)$text>10000){sendT($token,$chat,'সঠিক USD amount দিন।');}else{$d['usd']=(float)$text;$rate=(float)gv($db,'dollar_price_bdt','130');$d['rate']=$rate;$d['total']=round($d['usd']*$rate,2);sess($db,$uid,$chat,'method',$d);sendT($token,$chat,"💵 USD: {$d['usd']}\n💰 Total: <b>{$d['total']} BDT</b>\n\nPayment method লিখুন: <b>bkash</b> অথবা <b>bank</b>");}}
+  elseif($step==='method'){if(!in_array(strtolower($text),['bkash','bank'],true)){sendT($token,$chat,'bkash অথবা bank লিখুন।');}else{$d['method']=strtolower($text);$ins=gv($db,$d['method'].'_instructions','');sess($db,$uid,$chat,'phone',$d);sendT($token,$chat,($ins?"🏦 <b>Payment Instructions</b>\n$ins\n\n":'')."আপনার Phone Number দিন।");}}
+  elseif($step==='phone'){if(!preg_match('/^[0-9+()\-\s]{7,30}$/',$text)){sendT($token,$chat,'সঠিক phone number দিন।');}else{$d['phone']=$text;sess($db,$uid,$chat,'trxid',$d);sendT($token,$chat,'Payment করার পর TrxID / Reference দিন।');}}
+  elseif($step==='trxid'){if(strlen($text)<3||strlen($text)>100){sendT($token,$chat,'সঠিক TrxID দিন।');}else{$d['trxid']=$text;sess($db,$uid,$chat,'address',$d);sendT($token,$chat,'এখন আপনার <b>USDT BEP20 Address</b> দিন। (0x...)');}}
+  elseif($step==='address'){if(!preg_match('/^0x[a-fA-F0-9]{40}$/',$text)){sendT($token,$chat,'সঠিক BEP20 address দিন। এটি 0x দিয়ে শুরু হবে।');}else{$d['address']=$text;$no='DTC-'.date('Ymd').'-'.strtoupper(bin2hex(random_bytes(4)));$deadline=date('Y-m-d H:i:s',time()+1800);$q=$db->prepare("INSERT INTO orders(order_no,usd_amount,dollar_price_bdt,total_bdt,phone_number,bkash_trxid,payment_method,payment_reference,bep20_address,payment_deadline,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,'pending')");$q->execute([$no,$d['usd'],$d['rate'],$d['total'],$d['phone'],$d['trxid'],$d['method'],$d['trxid'],$d['address'],$deadline]);clearsess($db,$uid);sendT($token,$chat,"🧾 <b>Invoice Created</b>\nOrder: <b>$no</b>\nUSD: {$d['usd']}\nTotal: <b>{$d['total']} BDT</b>\nStatus: Pending verification\n⏱️ Invoice valid for 30 minutes.");foreach($admins as $aid)sendT($token,$aid,"🔔 <b>NEW ORDER</b>\nOrder: <b>$no</b>\nUSD: {$d['usd']}\nBDT: {$d['total']}\nMethod: {$d['method']}\nTrxID: {$d['trxid']}\nBEP20: {$d['address']}\n\n/approve $no\n/reject $no");}}
+ }}echo'OK';exit;}
+$parts=preg_split('/\s+/',$text)?:[];$cmd=strtolower(explode('@',$parts[0]??'')[0]);$arg=trim(implode(' ',array_slice($parts,1)));
+switch($cmd){
+case '/start':case '/help':sendT($token,$chat,"💳 <b>Dollar Topup Admin</b>\n/setprice 130\n/setbkash INFO\n/setbank INFO\n/orders\n/approve ORDER\n/reject ORDER\n/withdraw ORDER\n/queue\n/history");break;
+case '/setprice':$v=(float)($parts[1]??0);if($v>0){sv($db,'dollar_price_bdt',(string)$v);sendT($token,$chat,'✅ Price updated');}else sendT($token,$chat,'Usage: /setprice 130');break;
+case '/setbkash':case '/setbank':if($arg==='')sendT($token,$chat,"Usage: $cmd payment details");else{sv($db,$cmd==='/setbkash'?'bkash_instructions':'bank_instructions',$arg);sendT($token,$chat,'✅ Saved');}break;
+case '/orders':$r=$db->query("SELECT order_no,total_bdt,status FROM orders WHERE created_at>=NOW()-INTERVAL 90 DAY ORDER BY id DESC LIMIT 20")->fetchAll(PDO::FETCH_ASSOC);$o=$r?"📋 <b>Orders</b>\n":'No orders';foreach($r as $x)$o.="\n{$x['order_no']} | {$x['total_bdt']} BDT | {$x['status']}";sendT($token,$chat,$o);break;
+case '/approve':case '/reject':if($arg===''){sendT($token,$chat,"Usage: $cmd ORDER");break;}$st=$cmd==='/approve'?'approved':'rejected';$s=$db->prepare("UPDATE orders SET status=? WHERE order_no=? AND status='pending'");$s->execute([$st,$arg]);sendT($token,$chat,$s->rowCount()?"✅ $arg → $st":'❌ Not found/already processed');break;
+default:sendT($token,$chat,'Use /help');
+} }catch(Throwable $e){error_log('Telegram error: '.$e->getMessage());}echo'OK';
