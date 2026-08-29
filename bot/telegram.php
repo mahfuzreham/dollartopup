@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-// Telegram webhook handler.
+// Telegram webhook handler.\n// config.php loads .env before token/admin settings are read.
 // Set TELEGRAM_BOT_TOKEN and ADMIN_TELEGRAM_IDS in environment variables.
 // Webhook example: https://pay.resellnom.com/dollar/bot/telegram.php
 
