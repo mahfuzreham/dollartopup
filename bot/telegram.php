@@ -102,10 +102,17 @@ try{
     case '/setprice':$v=(float)($parts[1]??0);if($v>0){sv($db,'dollar_price_bdt',(string)$v);apiSend($token,$chat,'✅ Price updated');}else apiSend($token,$chat,'Usage: /setprice 130');break;
     case '/setbkash':case '/setbank':if($arg==='')apiSend($token,$chat,"Usage: $cmd payment details");else{sv($db,$cmd==='/setbkash'?'bkash_instructions':'bank_instructions',$arg);apiSend($token,$chat,'✅ Saved');}break;
     case '/orders':$r=$db->query("SELECT order_no,total_bdt,status FROM orders WHERE created_at>=NOW()-INTERVAL 90 DAY ORDER BY id DESC LIMIT 20")->fetchAll(PDO::FETCH_ASSOC);$o=$r?"📋 <b>Orders</b>\n":'No orders';foreach($r as $x)$o.="\n<code>{$x['order_no']}</code> | {$x['total_bdt']} BDT | {$x['status']}";apiSend($token,$chat,$o);break;
-    case '/reject':if($arg===''){apiSend($token,$chat,'Usage: /reject ORDER');break;}$s=$db->prepare("UPDATE orders SET status='rejected' WHERE order_no=? AND status='pending'");$s->execute([$arg]);apiSend($token,$chat,$s->rowCount()?"❌ $arg → rejected":'❌ Not found/already processed');break;
+    case '/reject':
+      if($arg===''){apiSend($token,$chat,'Usage: /reject ORDER');break;}
+      $s=$db->prepare("UPDATE orders SET status='rejected' WHERE order_no=? AND status='pending'");$s->execute([$arg]);
+      if($s->rowCount()){
+        $n=$db->prepare('SELECT chat_id,telegram_user_id FROM telegram_order_contacts WHERE order_no=?');$n->execute([$arg]);
+        if($uc=$n->fetch(PDO::FETCH_ASSOC))apiSend($token,(string)$uc['chat_id'],'❌ <b>Your order was rejected.</b> Please contact support if needed.');
+      }
+      apiSend($token,$chat,$s->rowCount()?"❌ $arg → rejected":'❌ Not found/already processed');break;
     case '/approve':
       if($arg===''){apiSend($token,$chat,'Usage: /approve ORDER');break;}
-      $db->beginTransaction();try{$s=$db->prepare("SELECT order_no,usd_amount,bep20_address FROM orders WHERE order_no=? AND status='pending' FOR UPDATE");$s->execute([$arg]);$o=$s->fetch(PDO::FETCH_ASSOC);if(!$o)throw new RuntimeException('Order not found');$db->prepare("INSERT INTO withdrawal_requests(order_no,destination_address,amount,status) VALUES(?,?,?,'queued')")->execute([$o['order_no'],$o['bep20_address'],$o['usd_amount']]);$db->prepare("UPDATE orders SET status='approved',withdrawal_status='queued',withdrawal_requested_at=NOW() WHERE order_no=?")->execute([$arg]);$db->commit();$n=$db->prepare('SELECT chat_id FROM telegram_order_contacts WHERE order_no=?');$n->execute([$arg]);if($uc=$n->fetchColumn())apiSend($token,(string)$uc,'✅ <b>Your order is approved.</b>\nProcessing started.');apiSend($token,$chat,"✅ $arg approved. Withdrawal queued.");}catch(Throwable $e){if($db->inTransaction())$db->rollBack();throw $e;}break;
+      $db->beginTransaction();try{$s=$db->prepare("SELECT order_no,usd_amount,bep20_address,payment_deadline FROM orders WHERE order_no=? AND status='pending' FOR UPDATE");$s->execute([$arg]);$o=$s->fetch(PDO::FETCH_ASSOC);if(!$o)throw new RuntimeException('Order not found');if(!empty($o['payment_deadline'])&&strtotime((string)$o['payment_deadline'])<time())throw new RuntimeException('Order payment deadline expired');$db->prepare("INSERT INTO withdrawal_requests(order_no,destination_address,amount,status) VALUES(?,?,?,'queued')")->execute([$o['order_no'],$o['bep20_address'],$o['usd_amount']]);$db->prepare("UPDATE orders SET status='approved',withdrawal_status='queued',withdrawal_requested_at=NOW() WHERE order_no=?")->execute([$arg]);$db->commit();$n=$db->prepare('SELECT c.chat_id,u.language FROM telegram_order_contacts c LEFT JOIN telegram_users u ON u.telegram_user_id=c.telegram_user_id WHERE c.order_no=?');$n->execute([$arg]);if($uc=$n->fetch(PDO::FETCH_ASSOC))apiSend($token,(string)$uc['chat_id'],(($uc['language']??'bn')==='en'?'✅ <b>Your order is approved.</b>\nWithdrawal processing has started.':'✅ <b>আপনার অর্ডার অনুমোদন করা হয়েছে।</b>\nWithdrawal processing শুরু হয়েছে।'));apiSend($token,$chat,"✅ $arg approved. Withdrawal queued.");}catch(Throwable $e){if($db->inTransaction())$db->rollBack();throw $e;}break;
     case '/queue':
       $r=$db->query("SELECT order_no,amount,status,verification_error,tx_hash,binance_withdraw_id FROM withdrawal_requests WHERE status IN ('queued','processing','hold','submitted') ORDER BY id ASC LIMIT 30")->fetchAll(PDO::FETCH_ASSOC);
       $o=$r?"💸 <b>Withdrawal Queue</b>\n":'Queue empty';
@@ -132,7 +139,7 @@ try{
     case '/sent':
       $p=preg_split('/\s+/',trim($arg),2);$ono=$p[0]??'';$tx=$p[1]??'';
       if($ono===''||$tx===''){apiSend($token,$chat,'Usage: /sent ORDER TX_HASH');break;}
-      $s=$db->prepare("UPDATE withdrawal_requests SET status='sent',tx_hash=?,verification_error=NULL WHERE order_no=? AND status IN ('queued','hold','processing','submitted')");$s->execute([$tx,$ono]);
+      if(!preg_match('/^(0x)?[a-fA-F0-9]{32,128}$/',$tx)){apiSend($token,$chat,'Invalid TX hash/reference.');break;}$s=$db->prepare("UPDATE withdrawal_requests SET status='sent',tx_hash=?,verification_error=NULL WHERE order_no=? AND status IN ('queued','hold','processing','submitted')");$s->execute([$tx,$ono]);
       $db->prepare("UPDATE orders SET withdrawal_status='sent' WHERE order_no=?")->execute([$ono]);
       $n=$db->prepare('SELECT chat_id FROM telegram_order_contacts WHERE order_no=?');$n->execute([$ono]);if($uc=$n->fetchColumn())apiSend($token,(string)$uc,"✅ <b>USDT Sent</b>\nOrder: <code>$ono</code>\n🌐 Network: BEP20\n🔗 TX: <code>".htmlspecialchars($tx)."</code>");
       apiSend($token,$chat,$s->rowCount()?"✅ $ono → sent":'Not found/not changeable');break;
