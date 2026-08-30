@@ -119,7 +119,7 @@ try{
       break;
     case '/process':
       $limit=max(1,min(20,(int)($parts[1]??10)));
-      $rr=processWithdrawals($db,$config,$limit);apiSend($token,$chat,'⚙️ '.$rr['message']);break;
+      $rr=processWithdrawals($db,$config,$limit,true);apiSend($token,$chat,'⚙️ '.$rr['message']);break;
     case '/hold':
       $p=preg_split('/\s+/',trim($arg),2);$ono=$p[0]??'';$reason=$p[1]??'Manual hold';
       if($ono===''){apiSend($token,$chat,'Usage: /hold ORDER REASON');break;}
