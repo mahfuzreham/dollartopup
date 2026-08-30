@@ -51,4 +51,9 @@ if($arg===''){sendT($token,$chat,'Usage: /received ORDER');break;}
 sendT($token,$chat,'Admin command only: user confirmation is handled automatically after delivery status is recorded.');
 break;
 default:sendT($token,$chat,'Use /help');
-} }catch(Throwable $e){error_log('Telegram error: '.$e->getMessage());}echo'OK';
+} }catch(Throwable $e){
+error_log('Telegram error: '.$e->getMessage().' | '.substr($e->getTraceAsString(),0,1000));
+if(isset($token,$chat) && $chat!=='' && function_exists('sendT')){
+  sendT($token,$chat,'⚠️ Order process করা যায়নি। দয়া করে আবার /start দিয়ে চেষ্টা করুন।');
+}
+}echo'OK';
