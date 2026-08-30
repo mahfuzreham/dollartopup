@@ -44,6 +44,13 @@ return [
     'app_name' => 'Dollar Topup Card',
     'webhook_secret' => (string)(getenv('WEBHOOK_SECRET') ?: ''),
     'telegram_bot_token' => (string)(getenv('TELEGRAM_BOT_TOKEN') ?: ''),
+    'binance_auto_withdraw' => filter_var((string)(getenv('BINANCE_AUTO_WITHDRAW') ?: 'false'), FILTER_VALIDATE_BOOLEAN),
+    'binance_api_key' => (string)(getenv('BINANCE_API_KEY') ?: ''),
+    'binance_api_secret' => (string)(getenv('BINANCE_API_SECRET') ?: ''),
+    'binance_base_url' => (string)(getenv('BINANCE_BASE_URL') ?: 'https://api.binance.com'),
+    'binance_usdt_network' => (string)(getenv('BINANCE_USDT_NETWORK') ?: 'BSC'),
+    'binance_wallet_type' => (int)(getenv('BINANCE_WALLET_TYPE') ?: 0),
+    'binance_recv_window' => (int)(getenv('BINANCE_RECV_WINDOW') ?: 5000),
     'admin_telegram_ids' => array_values(array_filter(
         array_map('trim', explode(',', (string)(getenv('ADMIN_TELEGRAM_IDS') ?: '')))
     )),
