@@ -6,3 +6,4 @@ CREATE TABLE IF NOT EXISTS telegram_order_contacts (
  order_no VARCHAR(100) NOT NULL PRIMARY KEY, telegram_user_id BIGINT NOT NULL, chat_id BIGINT NOT NULL,
  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+ALTER TABLE withdrawal_requests ADD COLUMN tx_hash VARCHAR(66) NULL, ADD COLUMN verification_error VARCHAR(255) NULL;
