@@ -39,3 +39,19 @@ ALTER TABLE orders ADD COLUMN withdrawal_requested_at DATETIME NULL;
 -- Existing withdrawal table upgrades.
 ALTER TABLE withdrawal_requests ADD COLUMN tx_hash VARCHAR(66) NULL;
 ALTER TABLE withdrawal_requests ADD COLUMN verification_error VARCHAR(255) NULL;
+
+-- User profiles and activity
+CREATE TABLE IF NOT EXISTS telegram_users (
+ telegram_user_id BIGINT NOT NULL PRIMARY KEY,
+ chat_id BIGINT NOT NULL,
+ username VARCHAR(100) NULL,
+ first_name VARCHAR(150) NULL,
+ last_name VARCHAR(150) NULL,
+ created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+ last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+ INDEX idx_last_seen (last_seen_at)
+);
+
+INSERT INTO settings(setting_key,setting_value) VALUES
+('support_team','Contact @YourSupportUsername')
+ON DUPLICATE KEY UPDATE setting_key=setting_key;
