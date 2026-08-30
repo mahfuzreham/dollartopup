@@ -24,8 +24,8 @@ function binanceWithdraw(array $cfg,string $orderNo,string $address,float $amoun
   if($r['code']>=200&&$r['code']<300&&isset($r['body']['id']))return ['ok'=>true,'id'=>(string)$r['body']['id'],'body'=>$r['body']];
   return ['ok'=>false,'error'=>(string)($r['body']['msg']??$r['body']['code']??'Binance withdrawal failed'),'body'=>$r['body']];
 }
-function processWithdrawals(PDO $db,array $cfg,int $limit=10):array{
-   $override=null;try{$s=$db->prepare("SELECT setting_value FROM settings WHERE setting_key='auto_withdraw_enabled'");$s->execute();$v=$s->fetchColumn();if($v!==false)$override=in_array(strtolower((string)$v),['1','true','on','yes'],true);}catch(Throwable $e){} if($override===false||($override===null&&empty($cfg['binance_auto_withdraw'])))return ['processed'=>0,'sent'=>0,'failed'=>0,'message'=>'Auto withdrawal is OFF'];
+function processWithdrawals(PDO $db,array $cfg,int $limit=10,bool $force=false):array{
+   $override=null;try{$s=$db->prepare("SELECT setting_value FROM settings WHERE setting_key='auto_withdraw_enabled'");$s->execute();$v=$s->fetchColumn();if($v!==false)$override=in_array(strtolower((string)$v),['1','true','on','yes'],true);}catch(Throwable $e){} if(!$force&&($override===false||($override===null&&empty($cfg['binance_auto_withdraw']))))return ['processed'=>0,'sent'=>0,'failed'=>0,'message'=>'Auto withdrawal is OFF'];
   $rows=$db->query("SELECT id,order_no,destination_address,amount FROM withdrawal_requests WHERE status='queued' ORDER BY id ASC LIMIT ".max(1,min(50,$limit)))->fetchAll(PDO::FETCH_ASSOC);
   $out=['processed'=>0,'sent'=>0,'failed'=>0,'message'=>''];
   foreach($rows as $w){
