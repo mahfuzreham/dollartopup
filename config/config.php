@@ -51,6 +51,8 @@ return [
     'binance_usdt_network' => (string)(getenv('BINANCE_USDT_NETWORK') ?: 'BSC'),
     'binance_wallet_type' => (int)(getenv('BINANCE_WALLET_TYPE') ?: 0),
     'binance_recv_window' => (int)(getenv('BINANCE_RECV_WINDOW') ?: 5000),
+    'admin_web_user' => (string)(getenv('ADMIN_WEB_USER') ?: ''),
+    'admin_web_pass' => (string)(getenv('ADMIN_WEB_PASS') ?: ''),
     'admin_telegram_ids' => array_values(array_filter(
         array_map('trim', explode(',', (string)(getenv('ADMIN_TELEGRAM_IDS') ?: '')))
     )),
