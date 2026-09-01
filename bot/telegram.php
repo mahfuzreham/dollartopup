@@ -28,6 +28,16 @@ function paymentInstruction(PDO $db,string $method):string{
   $map=['bkash'=>'bkash_instructions','bkash_auto'=>'bkash_auto_instructions','nagad'=>'nagad_instructions','bank'=>'bank_instructions'];
   return gv($db,$map[$method]??'','');
 }
+function paymentCopyText(string $raw):string{
+  $lines=preg_split('/\r?\n/',trim($raw))?:[];$out=[];
+  foreach($lines as $line){
+    $line=trim($line);if($line==='')continue;
+    $p=preg_split('/\s*[:：]\s*/',$line,2);
+    if(count($p)===2&&trim($p[1])!=='')$out[]=htmlspecialchars(trim($p[0])).': <code>'.htmlspecialchars(trim($p[1])).'</code>';
+    else $out[]='<code>'.htmlspecialchars($line).'</code>';
+  }
+  return implode("\n",$out);
+}
 function menu(string $token,string $chat,string $l,string $title):void{
   $k=$l==='en'
     ? [[['text'=>'💳 Buy Dollar'],['text'=>'👤 My Profile']],[['text'=>'📊 Last 15 Days'],['text'=>'🆘 Support Team']],[['text'=>'🌐 Language']]]
@@ -122,7 +132,7 @@ try{
           $d['method']=$method;$ins=paymentInstruction($db,$method);
           sess($db,$uid,$chat,'phone',$d);
           $title=$method==='bkash_auto'?'🤖 <b>bKash Auto Payment</b>':'🏦 <b>Payment Instructions</b>';
-          $copy=trim($ins)!==''?htmlspecialchars($ins):tr($lang,'Admin এখনো payment details সেট করেননি।','Payment details are not configured yet.');
+          $copy=trim($ins)!==''?paymentCopyText($ins):tr($lang,'Admin এখনো payment details সেট করেননি।','Payment details are not configured yet.');
           $hint=tr($lang,'📋 নিচের প্রতিটি তথ্য আলাদা <code>code box</code>-এ দেওয়া আছে। Tap/hold করে আলাদা আলাদা Copy করুন।','📋 Each value is shown separately in a <code>copy-friendly box</code>. Tap/hold to copy individual information.');
           apiSend($token,$chat,$title."\n\n".$copy."\n\n".$hint."\n\n".tr($lang,'আপনার Phone Number দিন।','Enter your phone number.'));
         }
