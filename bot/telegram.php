@@ -100,7 +100,7 @@ try{
 
   $parts=preg_split('/\s+/',$text)?:[];$cmd=strtolower(explode('@',$parts[0]??'')[0]);$arg=trim(implode(' ',array_slice($parts,1)));
   switch($cmd){
-    case '/start':case '/help':apiSend($token,$chat,"💳 <b>Dollar Topup Admin</b>\n/setprice 130\n/setbkash INFO\n/setbank INFO\n/orders\n/approve ORDER\n/reject ORDER\n/queue\n/process [limit]\n/hold ORDER REASON\n/retry ORDER\n/sent ORDER TXHASH\n/auto on|off|status");break;
+    case '/start':case '/help':apiSend($token,$chat,"💳 <b>Dollar Topup Admin</b>\n/setprice 130\n/setbkash INFO\n/setbank INFO\n/orders\n/approve ORDER\n/reject ORDER\n/queue\n/process [limit]\n/hold ORDER REASON\n/retry ORDER\n/sent ORDER TXHASH\n/auto on|off|status\n/mode auto|manual\n/process [limit]\n/sent ORDER TXHASH");break;
     case '/setprice':$v=(float)($parts[1]??0);if($v>0){sv($db,'dollar_price_bdt',(string)$v);apiSend($token,$chat,'✅ Price updated');}else apiSend($token,$chat,'Usage: /setprice 130');break;
     case '/setbkash':case '/setbank':if($arg==='')apiSend($token,$chat,"Usage: $cmd payment details");else{sv($db,$cmd==='/setbkash'?'bkash_instructions':'bank_instructions',$arg);apiSend($token,$chat,'✅ Saved');}break;
     case '/orders':$r=$db->query("SELECT order_no,total_bdt,status FROM orders WHERE created_at>=NOW()-INTERVAL 90 DAY ORDER BY id DESC LIMIT 20")->fetchAll(PDO::FETCH_ASSOC);$o=$r?"📋 <b>Orders</b>\n":'No orders';foreach($r as $x)$o.="\n<code>{$x['order_no']}</code> | {$x['total_bdt']} BDT | {$x['status']}";apiSend($token,$chat,$o);break;
@@ -117,9 +117,16 @@ try{
       $db->beginTransaction();try{$s=$db->prepare("SELECT order_no,usd_amount,bep20_address,payment_deadline FROM orders WHERE order_no=? AND status='pending' FOR UPDATE");$s->execute([$arg]);$o=$s->fetch(PDO::FETCH_ASSOC);if(!$o)throw new RuntimeException('Order not found');if(!empty($o['payment_deadline'])&&strtotime((string)$o['payment_deadline'])<time())throw new RuntimeException('Order payment deadline expired');$db->prepare("INSERT INTO withdrawal_requests(order_no,destination_address,amount,status) VALUES(?,?,?,'queued')")->execute([$o['order_no'],$o['bep20_address'],$o['usd_amount']]);$db->prepare("UPDATE orders SET status='approved',withdrawal_status='queued',withdrawal_requested_at=NOW() WHERE order_no=?")->execute([$arg]);$db->commit();$n=$db->prepare('SELECT c.chat_id,u.language FROM telegram_order_contacts c LEFT JOIN telegram_users u ON u.telegram_user_id=c.telegram_user_id WHERE c.order_no=?');$n->execute([$arg]);if($uc=$n->fetch(PDO::FETCH_ASSOC))apiSend($token,(string)$uc['chat_id'],(($uc['language']??'bn')==='en'?'✅ <b>Your order is approved.</b>\nWithdrawal processing has started.':'✅ <b>আপনার অর্ডার অনুমোদন করা হয়েছে।</b>\nWithdrawal processing শুরু হয়েছে।'));apiSend($token,$chat,"✅ $arg approved. Withdrawal queued.");}catch(Throwable $e){if($db->inTransaction())$db->rollBack();throw $e;}break;
     case '/queue':
       $r=$db->query("SELECT order_no,amount,status,verification_error,tx_hash,binance_withdraw_id FROM withdrawal_requests WHERE status IN ('queued','processing','hold','submitted') ORDER BY id ASC LIMIT 30")->fetchAll(PDO::FETCH_ASSOC);
-      $o=$r?"💸 <b>Withdrawal Queue</b>\n":'Queue empty';
-      foreach($r as $x){$o.="\n\n<code>{$x['order_no']}</code>\n{$x['amount']} USDT | <b>{$x['status']}</b>";if($x['binance_withdraw_id'])$o.="\nBinance ID: <code>{$x['binance_withdraw_id']}</code>";if($x['verification_error'])$o.="\n⚠️ ".htmlspecialchars($x['verification_error']);}
+      $auto=strtolower(gv($db,'auto_withdraw_enabled',empty($config['binance_auto_withdraw'])?'0':'1'));
+      $o=$r?"💸 <b>Withdrawal Queue</b>\n🤖 Auto: <b>".($auto==='1'?'ON':'OFF')."</b> | 👤 Manual: <b>Available</b>\n":'Queue empty';
+      foreach($r as $x){$o.="\n\n<code>{$x['order_no']}</code>\n{$x['amount']} USDT | <b>{$x['status']}</b>";if($x['status']==='queued')$o.="\n🤖 Auto: ".($auto==='1'?'will process':'OFF')." | 👤 Manual: <code>/sent {$x['order_no']} TXHASH</code>";if($x['binance_withdraw_id'])$o.="\nBinance ID: <code>{$x['binance_withdraw_id']}</code>";if($x['verification_error'])$o.="\n⚠️ ".htmlspecialchars($x['verification_error']);}
       apiSend($token,$chat,$o);break;
+    case '/mode':
+      $mode=strtolower($parts[1]??'');
+      if($mode==='auto'){sv($db,'auto_withdraw_enabled','1');apiSend($token,$chat,'🤖 Mode: AUTOMATIC\nQueued orders will be processed by Binance worker.');}
+      elseif($mode==='manual'){sv($db,'auto_withdraw_enabled','0');apiSend($token,$chat,'👤 Mode: MANUAL\nUse /sent ORDER TXHASH after sending.');}
+      else apiSend($token,$chat,'Usage: /mode auto or /mode manual');
+      break;
     case '/auto':
       $mode=strtolower($parts[1]??'status');
       if($mode==='on'){sv($db,'auto_withdraw_enabled','1');apiSend($token,$chat,'🤖 Auto withdrawal: ON');}
