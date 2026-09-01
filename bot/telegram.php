@@ -18,6 +18,16 @@ function apiInline(string $token,string $chat,string $text,array $buttons):void{
 function apiAnswerCallback(string $token,string $id,string $text=''):void{
   $h=curl_init('https://api.telegram.org/bot'.$token.'/answerCallbackQuery');curl_setopt_array($h,[CURLOPT_POST=>true,CURLOPT_POSTFIELDS=>['callback_query_id'=>$id,'text'=>$text],CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>10]);curl_exec($h);curl_close($h);
 }
+function paymentMethods(PDO $db,string $l):array{
+  $k=[[['text'=>'📱 bKash']]];
+  if(gv($db,'bkash_auto_enabled','0')==='1')$k[0][]=['text'=>'🤖 bKash Auto'];
+  $k[]=[['text'=>'📱 Nagad'],['text'=>'🏦 Bank']];
+  return $k;
+}
+function paymentInstruction(PDO $db,string $method):string{
+  $map=['bkash'=>'bkash_instructions','bkash_auto'=>'bkash_auto_instructions','nagad'=>'nagad_instructions','bank'=>'bank_instructions'];
+  return gv($db,$map[$method]??'','');
+}
 function menu(string $token,string $chat,string $l,string $title):void{
   $k=$l==='en'
     ? [[['text'=>'💳 Buy Dollar'],['text'=>'👤 My Profile']],[['text'=>'📊 Last 15 Days'],['text'=>'🆘 Support Team']],[['text'=>'🌐 Language']]]
@@ -102,10 +112,20 @@ try{
       [$step,$d]=$z;
       if($step==='usd'){
         if(!is_numeric($text)||(float)$text<=0||(float)$text>10000)apiSend($token,$chat,tr($lang,'⚠️ সঠিক USD amount দিন।','⚠️ Enter a valid USD amount.'));
-        else{$d['usd']=(float)$text;$d['rate']=(float)gv($db,'dollar_price_bdt','130');$d['total']=round($d['usd']*$d['rate'],2);sess($db,$uid,$chat,'method',$d);apiSend($token,$chat,tr($lang,"💵 USD: {$d['usd']}\n💰 মোট: <b>{$d['total']} BDT</b>\n\nPayment method নির্বাচন করুন: <b>bkash</b> অথবা <b>bank</b>","💵 USD: {$d['usd']}\n💰 Total: <b>{$d['total']} BDT</b>\n\nSelect payment method: <b>bkash</b> or <b>bank</b>"));}
+        else{$d['usd']=(float)$text;$d['rate']=(float)gv($db,'dollar_price_bdt','130');$d['total']=round($d['usd']*$d['rate'],2);sess($db,$uid,$chat,'method',$d);apiSend($token,$chat,tr($lang,"💵 USD: {$d['usd']}\n💰 মোট: <b>{$d['total']} BDT</b>\n\nনিচের Button থেকে Payment Method নির্বাচন করুন:","💵 USD: {$d['usd']}\n💰 Total: <b>{$d['total']} BDT</b>\n\nChoose a payment method below:"),paymentMethods($db,$lang));}
       }elseif($step==='method'){
-        if(!in_array(strtolower($text),['bkash','bank'],true))apiSend($token,$chat,tr($lang,'⚠️ bkash অথবা bank লিখুন।','⚠️ Enter bkash or bank.'));
-        else{$d['method']=strtolower($text);$ins=gv($db,$d['method'].'_instructions','');sess($db,$uid,$chat,'phone',$d);apiSend($token,$chat,($ins?"🏦 <b>Payment Instructions</b>\n".htmlspecialchars($ins)."\n\n":'').tr($lang,'আপনার Phone Number দিন।','Enter your phone number.'));}
+        $map=['📱 bKash'=>'bkash','🤖 bKash Auto'=>'bkash_auto','📱 Nagad'=>'nagad','🏦 Bank'=>'bank','bkash'=>'bkash','nagad'=>'nagad','bank'=>'bank'];
+        $method=$map[$text]??'';
+        if($method==='bkash_auto'&&gv($db,'bkash_auto_enabled','0')!=='1')$method='';
+        if($method==='')apiSend($token,$chat,tr($lang,'⚠️ নিচের Button থেকে একটি Payment Method নির্বাচন করুন।','⚠️ Please choose a payment method from the buttons below.'),paymentMethods($db,$lang));
+        else{
+          $d['method']=$method;$ins=paymentInstruction($db,$method);
+          sess($db,$uid,$chat,'phone',$d);
+          $title=$method==='bkash_auto'?'🤖 <b>bKash Auto Payment</b>':'🏦 <b>Payment Instructions</b>';
+          $copy=trim($ins)!==''?htmlspecialchars($ins):tr($lang,'Admin এখনো payment details সেট করেননি।','Payment details are not configured yet.');
+          $hint=tr($lang,'📋 নিচের প্রতিটি তথ্য আলাদা <code>code box</code>-এ দেওয়া আছে। Tap/hold করে আলাদা আলাদা Copy করুন।','📋 Each value is shown separately in a <code>copy-friendly box</code>. Tap/hold to copy individual information.');
+          apiSend($token,$chat,$title."\n\n".$copy."\n\n".$hint."\n\n".tr($lang,'আপনার Phone Number দিন।','Enter your phone number.'));
+        }
       }elseif($step==='phone'){
         if(!preg_match('/^[0-9+()\-\s]{7,30}$/',$text))apiSend($token,$chat,tr($lang,'⚠️ সঠিক ফোন নম্বর দিন।','⚠️ Enter a valid phone number.'));
         else{$d['phone']=$text;sess($db,$uid,$chat,'trxid',$d);apiSend($token,$chat,tr($lang,'Payment করার পর TrxID / Reference দিন।','After payment, enter your TrxID / Reference.'));}
@@ -144,9 +164,18 @@ try{
   if($text==='/cancel' && $adminSession && $adminSession[0]==='admin_sent'){clearsess($db,$uid);apiSend($token,$chat,'❌ Manual release cancelled.');echo 'OK';exit;}
   $parts=preg_split('/\s+/',$text)?:[];$cmd=strtolower(explode('@',$parts[0]??'')[0]);$arg=trim(implode(' ',array_slice($parts,1)));
   switch($cmd){
-    case '/start':case '/help':apiSend($token,$chat,"💳 <b>Dollar Topup Admin</b>\n/setprice 130\n/setbkash INFO\n/setbank INFO\n/orders\n/approve ORDER\n/reject ORDER\n/queue\n/process [limit]\n/hold ORDER REASON\n/retry ORDER\n/sent ORDER TXHASH\n/auto on|off|status\n/mode auto|manual\n/process [limit]\n/sent ORDER TXHASH");break;
+    case '/start':case '/help':apiSend($token,$chat,"💳 <b>Dollar Topup Admin</b>\n/setprice 130\n/setbkash INFO\n/setnagad INFO\n/setbank INFO\n/setbkashauto INFO\n/bkashauto on|off|status\n/orders\n/approve ORDER\n/reject ORDER\n/queue\n/process [limit]\n/hold ORDER REASON\n/retry ORDER\n/sent ORDER TXHASH\n/auto on|off|status\n/mode auto|manual\n/process [limit]\n/sent ORDER TXHASH");break;
     case '/setprice':$v=(float)($parts[1]??0);if($v>0){sv($db,'dollar_price_bdt',(string)$v);apiSend($token,$chat,'✅ Price updated');}else apiSend($token,$chat,'Usage: /setprice 130');break;
-    case '/setbkash':case '/setbank':if($arg==='')apiSend($token,$chat,"Usage: $cmd payment details");else{sv($db,$cmd==='/setbkash'?'bkash_instructions':'bank_instructions',$arg);apiSend($token,$chat,'✅ Saved');}break;
+    case '/setbkash':case '/setnagad':case '/setbank':case '/setbkashauto':
+      if($arg==='')apiSend($token,$chat,"Usage: $cmd payment details");
+      else{$key=['/setbkash'=>'bkash_instructions','/setnagad'=>'nagad_instructions','/setbank'=>'bank_instructions','/setbkashauto'=>'bkash_auto_instructions'][$cmd];sv($db,$key,$arg);apiSend($token,$chat,'✅ Payment details saved.');}
+      break;
+    case '/bkashauto':
+      $mode=strtolower($parts[1]??'status');
+      if($mode==='on'){sv($db,'bkash_auto_enabled','1');apiSend($token,$chat,'🤖 bKash Auto button: ON');}
+      elseif($mode==='off'){sv($db,'bkash_auto_enabled','0');apiSend($token,$chat,'⛔ bKash Auto button: OFF');}
+      else apiSend($token,$chat,'🤖 bKash Auto: '.(gv($db,'bkash_auto_enabled','0')==='1'?'ON':'OFF'));
+      break;
     case '/orders':$r=$db->query("SELECT order_no,total_bdt,status FROM orders WHERE created_at>=NOW()-INTERVAL 90 DAY ORDER BY id DESC LIMIT 20")->fetchAll(PDO::FETCH_ASSOC);$o=$r?"📋 <b>Orders</b>\n":'No orders';foreach($r as $x)$o.="\n<code>{$x['order_no']}</code> | {$x['total_bdt']} BDT | {$x['status']}";apiSend($token,$chat,$o);break;
     case '/reject':
       if($arg===''){apiSend($token,$chat,'Usage: /reject ORDER');break;}
