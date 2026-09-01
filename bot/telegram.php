@@ -90,6 +90,8 @@ try{
           $db->prepare('INSERT INTO telegram_order_contacts(order_no,telegram_user_id,chat_id) VALUES(?,?,?)')->execute([$no,$uid,$chat]);clearsess($db,$uid);
           apiSend($token,$chat,tr($lang,"✅ <b>অর্ডার জমা হয়েছে</b>\n\n🆔 Order ID: <code>$no</code>\n🌐 Network: <b>USDT (BEP20)</b>\n💵 USD: {$d['usd']}\n💰 মোট: <b>{$d['total']} BDT</b>\n📌 Status: <b>Verification Pending</b>\n⏱️ সময়সীমা: <b>45 মিনিট</b>\n\nVerification শেষে Telegram-এ update পাবেন।","✅ <b>Order Submitted</b>\n\n🆔 Order ID: <code>$no</code>\n🌐 Network: <b>USDT (BEP20)</b>\n💵 USD: {$d['usd']}\n💰 Total: <b>{$d['total']} BDT</b>\n📌 Status: <b>Pending Verification</b>\n⏱️ Time limit: <b>45 minutes</b>\n\nYou will receive a Telegram update after verification."));
           foreach($admins as $aid)apiSend($token,$aid,"🔔 <b>NEW ORDER</b>\n\n📋 <b>Order ID</b>\n<code>$no</code>\n\n💵 USD: <b>{$d['usd']}</b>\n💰 BDT: <b>{$d['total']}</b>\n🌐 Network: <b>USDT (BEP20)</b>\n🏦 Method: <b>{$d['method']}</b>\n🔖 TrxID: <code>{$d['trxid']}</code>\n\n🎯 <b>BEP20 Address</b>\n<code>{$d['address']}</code>\n\n<code>/approve $no</code>\n<code>/reject $no</code>");
+          // Restore the permanent user menu so the temporary BEP20 keyboard does not remain on screen.
+          menu($token,$chat,$lang,tr($lang,'🏠 <b>মূল মেনু</b>\nনিচের অপশন থেকে নির্বাচন করুন।','🏠 <b>Main Menu</b>\nChoose an option below.'));
         }
       }
     }
