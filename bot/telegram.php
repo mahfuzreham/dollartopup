@@ -11,6 +11,13 @@ function apiSend(string $token,string $chat,string $text,?array $keyboard=null):
   curl_setopt_array($h,[CURLOPT_POST=>true,CURLOPT_POSTFIELDS=>$d,CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>15]);
   curl_exec($h);curl_close($h);
 }
+function apiInline(string $token,string $chat,string $text,array $buttons):void{
+  $d=['chat_id'=>$chat,'text'=>$text,'parse_mode'=>'HTML','reply_markup'=>json_encode(['inline_keyboard'=>$buttons],JSON_UNESCAPED_UNICODE)];
+  $h=curl_init('https://api.telegram.org/bot'.$token.'/sendMessage');curl_setopt_array($h,[CURLOPT_POST=>true,CURLOPT_POSTFIELDS=>$d,CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>15]);curl_exec($h);curl_close($h);
+}
+function apiAnswerCallback(string $token,string $id,string $text=''):void{
+  $h=curl_init('https://api.telegram.org/bot'.$token.'/answerCallbackQuery');curl_setopt_array($h,[CURLOPT_POST=>true,CURLOPT_POSTFIELDS=>['callback_query_id'=>$id,'text'=>$text],CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>10]);curl_exec($h);curl_close($h);
+}
 function menu(string $token,string $chat,string $l,string $title):void{
   $k=$l==='en'
     ? [[['text'=>'💳 Buy Dollar'],['text'=>'👤 My Profile']],[['text'=>'📊 Last 15 Days'],['text'=>'🆘 Support Team']],[['text'=>'🌐 Language']]]
@@ -27,13 +34,40 @@ try{
   $db=require __DIR__.'/../config/database.php';
   $token=(string)$config['telegram_bot_token'];$admins=array_map('strval',$config['admin_telegram_ids']??[]);
   $u=json_decode(file_get_contents('php://input')?:'',true,512,JSON_THROW_ON_ERROR);
-  $m=$u['message']??[];$chat=(string)($m['chat']['id']??'');$uid=(string)($m['from']['id']??'');$text=trim((string)($m['text']??''));$from=$m['from']??[];
+  $cb=$u['callback_query']??null;
+  if(is_array($cb)){
+    $chat=(string)($cb['message']['chat']['id']??'');$uid=(string)($cb['from']['id']??'');$from=$cb['from']??[];$text='';$cbid=(string)($cb['id']??'');$data=(string)($cb['data']??'');
+  }else{$m=$u['message']??[];$chat=(string)($m['chat']['id']??'');$uid=(string)($m['from']['id']??'');$text=trim((string)($m['text']??''));$from=$m['from']??[];}
   if($chat===''||$uid===''){echo 'OK';exit;}
 
   $up=$db->prepare("INSERT INTO telegram_users(telegram_user_id,chat_id,username,first_name,last_name,last_seen_at) VALUES(?,?,?,?,?,NOW()) ON DUPLICATE KEY UPDATE chat_id=VALUES(chat_id),username=VALUES(username),first_name=VALUES(first_name),last_name=VALUES(last_name),last_seen_at=NOW()");
   $up->execute([$uid,$chat,(string)($from['username']??''),(string)($from['first_name']??''),(string)($from['last_name']??'')]);
   $s=$db->prepare('SELECT language FROM telegram_users WHERE telegram_user_id=?');$s->execute([$uid]);$lang=$s->fetchColumn()==='en'?'en':'bn';
   $isAdmin=in_array($uid,$admins,true);
+
+  if(is_array($cb)){
+    if(!$isAdmin){apiAnswerCallback($token,$cbid,'Admin only');echo 'OK';exit;}
+    $p=explode('|',$data,2);$action=$p[0]??'';$id=(int)($p[1]??0);
+    $q=$db->prepare('SELECT id,order_no,status,amount FROM withdrawal_requests WHERE id=?');$q->execute([$id]);$w=$q->fetch(PDO::FETCH_ASSOC);
+    if(!$w){apiAnswerCallback($token,$cbid,'Order not found');echo 'OK';exit;}
+    if($action==='REL'){
+      if($w['status']==='sent'){apiAnswerCallback($token,$cbid,'Already sent');echo 'OK';exit;}
+      sess($db,$uid,$chat,'admin_sent',['withdrawal_id'=>$id,'order_no'=>$w['order_no']]);
+      apiAnswerCallback($token,$cbid,'Enter TX hash now');
+      apiSend($token,$chat,"💸 <b>Manual Release</b>\nOrder: <code>{$w['order_no']}</code>\nAmount: <b>{$w['amount']} USDT</b>\n\nনিজে USDT পাঠানোর পর এখন <b>TX Hash</b> পাঠান।\nCancel: /cancel");
+    }elseif($action==='HOLD'){
+      $db->prepare("UPDATE withdrawal_requests SET status='hold',verification_error='Manual admin hold' WHERE id=? AND status<>'sent'")->execute([$id]);
+      $db->prepare("UPDATE orders SET withdrawal_status='hold' WHERE order_no=?")->execute([$w['order_no']]);
+      apiAnswerCallback($token,$cbid,'Moved to HOLD');
+      apiSend($token,$chat,"⏸️ <code>{$w['order_no']}</code> moved to HOLD.");
+    }elseif($action==='RETRY'){
+      $db->prepare("UPDATE withdrawal_requests SET status='queued',verification_error=NULL WHERE id=? AND status='hold'")->execute([$id]);
+      $db->prepare("UPDATE orders SET withdrawal_status='queued' WHERE order_no=?")->execute([$w['order_no']]);
+      apiAnswerCallback($token,$cbid,'Returned to queue');
+      apiSend($token,$chat,"🔄 <code>{$w['order_no']}</code> returned to QUEUE.");
+    }else apiAnswerCallback($token,$cbid,'Unknown action');
+    echo 'OK';exit;
+  }
 
   if(!$isAdmin){
     if($text==='/start'||$text==='🌐 Language'||$text==='🌐 ভাষা'){
@@ -98,6 +132,16 @@ try{
     echo 'OK';exit;
   }
 
+  // Admin manual-release flow: after pressing the Telegram button, the next TX hash completes the queue item.
+  $adminSession=getsess($db,$uid);
+  if($adminSession && $adminSession[0]==='admin_sent' && $text!=='/cancel'){
+    $d=$adminSession[1];$wid=(int)($d['withdrawal_id']??0);$ono=(string)($d['order_no']??'');
+    if(!preg_match('/^(0x)?[a-fA-F0-9]{32,128}$/',$text)){apiSend($token,$chat,'⚠️ Valid TX hash/reference দিন অথবা /cancel করুন।');echo 'OK';exit;}
+    $s=$db->prepare("UPDATE withdrawal_requests SET status='sent',tx_hash=?,verification_error=NULL WHERE id=? AND status IN ('queued','hold','processing','submitted')");$s->execute([$text,$wid]);
+    if($s->rowCount()){$db->prepare("UPDATE orders SET withdrawal_status='sent' WHERE order_no=?")->execute([$ono]);$n=$db->prepare('SELECT chat_id FROM telegram_order_contacts WHERE order_no=?');$n->execute([$ono]);if($uc=$n->fetchColumn())apiSend($token,(string)$uc,"✅ <b>USDT Sent</b>\nOrder: <code>$ono</code>\n🌐 Network: BEP20\n🔗 TX: <code>".htmlspecialchars($text)."</code>");apiSend($token,$chat,"✅ <code>$ono</code> marked SENT.");}else apiSend($token,$chat,'⚠️ Queue item could not be updated.');
+    clearsess($db,$uid);echo 'OK';exit;
+  }
+  if($text==='/cancel' && $adminSession && $adminSession[0]==='admin_sent'){clearsess($db,$uid);apiSend($token,$chat,'❌ Manual release cancelled.');echo 'OK';exit;}
   $parts=preg_split('/\s+/',$text)?:[];$cmd=strtolower(explode('@',$parts[0]??'')[0]);$arg=trim(implode(' ',array_slice($parts,1)));
   switch($cmd){
     case '/start':case '/help':apiSend($token,$chat,"💳 <b>Dollar Topup Admin</b>\n/setprice 130\n/setbkash INFO\n/setbank INFO\n/orders\n/approve ORDER\n/reject ORDER\n/queue\n/process [limit]\n/hold ORDER REASON\n/retry ORDER\n/sent ORDER TXHASH\n/auto on|off|status\n/mode auto|manual\n/process [limit]\n/sent ORDER TXHASH");break;
@@ -116,11 +160,18 @@ try{
       if($arg===''){apiSend($token,$chat,'Usage: /approve ORDER');break;}
       $db->beginTransaction();try{$s=$db->prepare("SELECT order_no,usd_amount,bep20_address,payment_deadline FROM orders WHERE order_no=? AND status='pending' FOR UPDATE");$s->execute([$arg]);$o=$s->fetch(PDO::FETCH_ASSOC);if(!$o)throw new RuntimeException('Order not found');if(!empty($o['payment_deadline'])&&strtotime((string)$o['payment_deadline'])<time())throw new RuntimeException('Order payment deadline expired');$db->prepare("INSERT INTO withdrawal_requests(order_no,destination_address,amount,status) VALUES(?,?,?,'queued')")->execute([$o['order_no'],$o['bep20_address'],$o['usd_amount']]);$db->prepare("UPDATE orders SET status='approved',withdrawal_status='queued',withdrawal_requested_at=NOW() WHERE order_no=?")->execute([$arg]);$db->commit();$n=$db->prepare('SELECT c.chat_id,u.language FROM telegram_order_contacts c LEFT JOIN telegram_users u ON u.telegram_user_id=c.telegram_user_id WHERE c.order_no=?');$n->execute([$arg]);if($uc=$n->fetch(PDO::FETCH_ASSOC))apiSend($token,(string)$uc['chat_id'],(($uc['language']??'bn')==='en'?'✅ <b>Your order is approved.</b>\nWithdrawal processing has started.':'✅ <b>আপনার অর্ডার অনুমোদন করা হয়েছে।</b>\nWithdrawal processing শুরু হয়েছে।'));apiSend($token,$chat,"✅ $arg approved. Withdrawal queued.");}catch(Throwable $e){if($db->inTransaction())$db->rollBack();throw $e;}break;
     case '/queue':
-      $r=$db->query("SELECT order_no,amount,status,verification_error,tx_hash,binance_withdraw_id FROM withdrawal_requests WHERE status IN ('queued','processing','hold','submitted') ORDER BY id ASC LIMIT 30")->fetchAll(PDO::FETCH_ASSOC);
+      $r=$db->query("SELECT id,order_no,amount,status,verification_error,tx_hash,binance_withdraw_id FROM withdrawal_requests WHERE status IN ('queued','processing','hold','submitted') ORDER BY id ASC LIMIT 30")->fetchAll(PDO::FETCH_ASSOC);
       $auto=strtolower(gv($db,'auto_withdraw_enabled',empty($config['binance_auto_withdraw'])?'0':'1'));
       $o=$r?"💸 <b>Withdrawal Queue</b>\n🤖 Auto: <b>".($auto==='1'?'ON':'OFF')."</b> | 👤 Manual: <b>Available</b>\n":'Queue empty';
       foreach($r as $x){$o.="\n\n<code>{$x['order_no']}</code>\n{$x['amount']} USDT | <b>{$x['status']}</b>";if($x['status']==='queued')$o.="\n🤖 Auto: ".($auto==='1'?'will process':'OFF')." | 👤 Manual: <code>/sent {$x['order_no']} TXHASH</code>";if($x['binance_withdraw_id'])$o.="\nBinance ID: <code>{$x['binance_withdraw_id']}</code>";if($x['verification_error'])$o.="\n⚠️ ".htmlspecialchars($x['verification_error']);}
-      apiSend($token,$chat,$o);break;
+      apiSend($token,$chat,$o);
+      foreach($r as $x){
+        $buttons=[];
+        if($x['status']!=='sent')$buttons[]=[['text'=>'💸 Manual Release','callback_data'=>'REL|'.$x['id']],['text'=>'⏸ Hold','callback_data'=>'HOLD|'.$x['id']]];
+        if($x['status']==='hold')$buttons[]=[['text'=>'🔄 Re-queue','callback_data'=>'RETRY|'.$x['id']]];
+        if($buttons)apiInline($token,$chat,"<b>{$x['order_no']}</b> • {$x['amount']} USDT • <b>".htmlspecialchars(strtoupper($x['status']))."</b>",$buttons);
+      }
+      break;
     case '/mode':
       $mode=strtolower($parts[1]??'');
       if($mode==='auto'){sv($db,'auto_withdraw_enabled','1');apiSend($token,$chat,'🤖 Mode: AUTOMATIC\nQueued orders will be processed by Binance worker.');}
