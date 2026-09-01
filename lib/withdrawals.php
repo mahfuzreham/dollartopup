@@ -64,3 +64,29 @@ function processWithdrawals(PDO $db,array $cfg,int $limit=10,bool $force=false):
   $out['message']="Processed {$out['processed']}, submitted {$out['sent']}, held {$out['failed']}";
   return $out;
 }
+
+function binanceWithdrawalHistory(array $cfg,string $orderNo):array{
+  $r=binanceSignedRequest($cfg,'GET','/sapi/v1/capital/withdraw/history',['coin'=>'USDT','withdrawOrderId'=>$orderNo]);
+  if($r['code']>=200&&$r['code']<300&&is_array($r['body']))return ['ok'=>true,'rows'=>$r['body']];
+  return ['ok'=>false,'rows'=>[],'error'=>(string)($r['body']['msg']??'Unable to read Binance withdrawal history')];
+}
+function syncSubmittedWithdrawals(PDO $db,array $cfg,int $limit=20):array{
+  if(empty($cfg['binance_api_key'])||empty($cfg['binance_api_secret']))return ['checked'=>0,'completed'=>0,'failed'=>0];
+  $limit=max(1,min(50,$limit));
+  $rows=$db->query("SELECT id,order_no FROM withdrawal_requests WHERE status='submitted' ORDER BY id ASC LIMIT ".$limit)->fetchAll(PDO::FETCH_ASSOC);
+  $out=['checked'=>0,'completed'=>0,'failed'=>0];
+  foreach($rows as $w){
+    $out['checked']++;$h=binanceWithdrawalHistory($cfg,(string)$w['order_no']);
+    if(!$h['ok']||empty($h['rows']))continue;
+    $x=$h['rows'][0]??[];$status=(int)($x['status']??-1);$tx=(string)($x['txId']??'');
+    if($status===6){
+      $db->prepare("UPDATE withdrawal_requests SET status='sent',tx_hash=?,verification_error=NULL WHERE id=? AND status='submitted'")->execute([$tx!==''?$tx:null,$w['id']]);
+      $db->prepare("UPDATE orders SET withdrawal_status='sent' WHERE order_no=?")->execute([$w['order_no']]);$out['completed']++;
+    }elseif(in_array($status,[3,5],true)){
+      $msg=substr((string)($x['info']??'Binance withdrawal was rejected or failed'),0,255);
+      $db->prepare("UPDATE withdrawal_requests SET status='hold',verification_error=? WHERE id=? AND status='submitted'")->execute([$msg,$w['id']]);
+      $db->prepare("UPDATE orders SET withdrawal_status='hold' WHERE order_no=?")->execute([$w['order_no']]);$out['failed']++;
+    }
+  }
+  return $out;
+}
