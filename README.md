@@ -43,7 +43,7 @@ Telegram-based USDT purchase and payout management system.
 ## 1. Clone / update
 
 ```bash
-cd /home/payresellnom/public_html/dollar
+cd /home//public_html/dollar
 git pull origin main
 ```
 
@@ -392,7 +392,7 @@ bKash Auto is prepared for future API integration.
 For automatic queue processing, configure a cPanel cron job:
 
 ```cron
-* * * * * cd /home/payresellnom/public_html/dollar && /usr/bin/php process_withdrawals.php >/dev/null 2>&1
+* * * * * cd /home//public_html/dollar && /usr/bin/php process_withdrawals.php >/dev/null 2>&1
 ```
 
 Do not paste `crontab -e` commands into the cPanel cron command field.
@@ -455,7 +455,7 @@ php migrate.php
 # Update Deployment
 
 ```bash
-cd /home/payresellnom/public_html/dollar
+cd /home//public_html/dollar
 git pull origin main
 php migrate.php
 php -l bot/telegram.php
